@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS embedding_jobs (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    song_id BIGINT NOT NULL,
+    job_type VARCHAR(32) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    requested_source VARCHAR(32) NOT NULL DEFAULT 'manual',
+    priority INT NOT NULL DEFAULT 0,
+    attempt_count INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 3,
+    available_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    worker_name VARCHAR(128) NULL,
+    claim_token VARCHAR(64) NULL,
+    last_error TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    started_at DATETIME NULL,
+    finished_at DATETIME NULL,
+    last_enqueued_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_embedding_jobs_song_type (song_id, job_type),
+    KEY idx_embedding_jobs_claim (job_type, status, available_at, priority, id),
+    KEY idx_embedding_jobs_song (song_id)
+);

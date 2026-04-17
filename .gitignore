@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+firebase-service-account.json
+best_audio_embedding_model.pt
+metadata_fasttext.bin
+.cache/
+__pycache__/
+app/__pycache__/
+db/__pycache__/
