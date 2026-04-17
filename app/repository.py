@@ -178,38 +178,38 @@ def enqueue_embedding_job(
                 )
                 ON DUPLICATE KEY UPDATE
                     requested_source = VALUES(requested_source),
-                    priority = GREATEST(priority, VALUES(priority)),
+                    priority = GREATEST(embedding_jobs.priority, VALUES(priority)),
                     max_attempts = VALUES(max_attempts),
                     attempt_count = CASE
-                        WHEN status = 'running' THEN attempt_count
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.attempt_count
                         ELSE 0
                     END,
                     status = CASE
-                        WHEN status = 'running' THEN status
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.status
                         ELSE 'pending'
                     END,
                     available_at = CASE
-                        WHEN status = 'running' THEN available_at
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.available_at
                         ELSE CURRENT_TIMESTAMP
                     END,
                     worker_name = CASE
-                        WHEN status = 'running' THEN worker_name
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.worker_name
                         ELSE NULL
                     END,
                     claim_token = CASE
-                        WHEN status = 'running' THEN claim_token
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.claim_token
                         ELSE NULL
                     END,
                     last_error = CASE
-                        WHEN status = 'running' THEN last_error
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.last_error
                         ELSE NULL
                     END,
                     started_at = CASE
-                        WHEN status = 'running' THEN started_at
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.started_at
                         ELSE NULL
                     END,
                     finished_at = CASE
-                        WHEN status = 'running' THEN finished_at
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.finished_at
                         ELSE NULL
                     END,
                     last_enqueued_at = CURRENT_TIMESTAMP
@@ -296,38 +296,38 @@ def enqueue_missing_jobs(
                 {select_sql}
                 ON DUPLICATE KEY UPDATE
                     requested_source = VALUES(requested_source),
-                    priority = GREATEST(priority, VALUES(priority)),
+                    priority = GREATEST(embedding_jobs.priority, VALUES(priority)),
                     max_attempts = VALUES(max_attempts),
                     attempt_count = CASE
-                        WHEN status = 'running' THEN attempt_count
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.attempt_count
                         ELSE 0
                     END,
                     status = CASE
-                        WHEN status = 'running' THEN status
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.status
                         ELSE 'pending'
                     END,
                     available_at = CASE
-                        WHEN status = 'running' THEN available_at
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.available_at
                         ELSE CURRENT_TIMESTAMP
                     END,
                     worker_name = CASE
-                        WHEN status = 'running' THEN worker_name
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.worker_name
                         ELSE NULL
                     END,
                     claim_token = CASE
-                        WHEN status = 'running' THEN claim_token
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.claim_token
                         ELSE NULL
                     END,
                     last_error = CASE
-                        WHEN status = 'running' THEN last_error
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.last_error
                         ELSE NULL
                     END,
                     started_at = CASE
-                        WHEN status = 'running' THEN started_at
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.started_at
                         ELSE NULL
                     END,
                     finished_at = CASE
-                        WHEN status = 'running' THEN finished_at
+                        WHEN embedding_jobs.status = 'running' THEN embedding_jobs.finished_at
                         ELSE NULL
                     END,
                     last_enqueued_at = CURRENT_TIMESTAMP
