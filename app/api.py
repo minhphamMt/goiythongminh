@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -16,7 +17,13 @@ from app.repository import (
 )
 
 
-app = FastAPI(title="Embedding Service", version="1.0.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    ensure_schema()
+    yield
+
+
+app = FastAPI(title="Embedding Service", version="1.0.0", lifespan=lifespan)
 
 
 def require_token(x_embedding_token: str | None = Header(default=None)) -> None:
@@ -36,14 +43,19 @@ class SweepRequest(BaseModel):
     requested_source: str = "sweep"
 
 
-@app.on_event("startup")
-def on_startup() -> None:
-    ensure_schema()
-
-
 @app.get("/health")
 def healthcheck() -> dict:
     return {"ok": True, "service": "embedding-service"}
+
+
+@app.get("/", include_in_schema=False)
+def root() -> dict:
+    return {
+        "ok": True,
+        "service": "embedding-service",
+        "health_url": "/health",
+        "docs_url": "/docs",
+    }
 
 
 @app.post("/songs/{song_id}/embed", dependencies=[Depends(require_token)])

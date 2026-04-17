@@ -13,7 +13,11 @@ def ensure_parent_dir(path: Path) -> None:
 
 def download_file(url: str, destination: Path) -> Path:
     ensure_parent_dir(destination)
-    fd, temp_name = tempfile.mkstemp(prefix="artifact-", suffix=destination.suffix)
+    fd, temp_name = tempfile.mkstemp(
+        prefix="artifact-",
+        suffix=destination.suffix,
+        dir=str(destination.parent),
+    )
     os.close(fd)
     temp_path = Path(temp_name)
 
