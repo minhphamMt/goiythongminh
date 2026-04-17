@@ -15,7 +15,7 @@ import torch.nn as nn
 from app.assets import resolve_artifact
 from app.config import settings
 from app.errors import AudioDecodeError, MissingAudioPathError, SongNotFoundError
-from app.repository import fetch_song_audio, save_song_embedding
+from app.repository import fetch_song_audio, save_song_embedding, update_song_audio_path
 from app.storage import get_bucket
 
 
@@ -82,9 +82,34 @@ class AudioEmbeddingService:
         if not audio_path:
             return ""
 
-        path = urllib.parse.unquote(audio_path.strip().lstrip("/"))
+        path = urllib.parse.unquote(audio_path.strip())
+
+        # Some rows accidentally store a full Firebase download URL inside
+        # audio_path, sometimes even prefixed with "uploads/".
+        for marker in ("https://", "http://"):
+            marker_index = path.find(marker)
+            if marker_index >= 0:
+                path = path[marker_index:]
+                break
+
+        parsed = urllib.parse.urlparse(path)
+        if parsed.scheme and parsed.netloc:
+            url_path = urllib.parse.unquote(parsed.path or "")
+            if "/o/" in url_path:
+                path = url_path.split("/o/", 1)[1]
+            else:
+                path = url_path.lstrip("/")
+                bucket_prefix = f"{settings.gcs_bucket}/"
+                if path.startswith(bucket_prefix):
+                    path = path[len(bucket_prefix) :]
+
+        path = urllib.parse.unquote(path)
+        path = path.split("?", 1)[0].split("#", 1)[0]
+        path = path.lstrip("/")
+
         while path.startswith("uploads/uploads/"):
             path = path.replace("uploads/uploads/", "uploads/", 1)
+
         if not path.startswith("uploads/"):
             path = f"uploads/{path}"
         return path
@@ -202,9 +227,13 @@ class AudioEmbeddingService:
         if not row:
             raise SongNotFoundError(f"Song {song_id} not found or deleted.")
 
-        blob_path = self.to_blob_path(row.get("audio_path") or "")
+        raw_audio_path = (row.get("audio_path") or "").strip()
+        blob_path = self.to_blob_path(raw_audio_path)
         if not blob_path:
             raise MissingAudioPathError(f"Song {song_id} does not have a valid audio_path.")
+
+        if raw_audio_path != blob_path:
+            update_song_audio_path(song_id, blob_path)
 
         temp_path = self.download_with_retry(blob_path)
         try:

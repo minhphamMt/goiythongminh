@@ -117,6 +117,20 @@ def fetch_song_audio(song_id: int) -> dict[str, Any] | None:
             return cursor.fetchone()
 
 
+def update_song_audio_path(song_id: int, audio_path: str) -> None:
+    with connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE songs
+                SET audio_path = %s
+                WHERE id = %s
+                  AND is_deleted = 0
+                """,
+                (audio_path, song_id),
+            )
+
+
 def save_song_embedding(song_id: int, embed_type: str, vector: list[float]) -> None:
     with connection() as conn:
         with conn.cursor() as cursor:
