@@ -18,8 +18,9 @@ from app.database import connection
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL_PATH = BASE_DIR / "metadata_fasttext_light.bin"
+DEFAULT_METADATA_MODEL_PATH = BASE_DIR / "metadata_fasttext_light.bin"
 DEFAULT_TOPK = "5,10"
+DEFAULT_ALPHA_GRID = "0.2,0.4,0.5,0.6,0.8"
 DEFAULT_RELEVANCE_FIELDS = "artist,album,genre"
 DEFAULT_RELEVANCE_WEIGHTS = "artist=3,album=2,genre=1"
 VALID_RELEVANCE_FIELDS = ("artist", "album", "genre")
@@ -27,12 +28,12 @@ VALID_RELEVANCE_FIELDS = ("artist", "album", "genre")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Evaluate a trained metadata fastText model for song recommendation."
+        description="Evaluate metadata and audio recommendation quality from DB songs."
     )
     parser.add_argument(
-        "--model-path",
-        default=str(DEFAULT_MODEL_PATH),
-        help="Path to the trained fastText .bin model.",
+        "--metadata-model-path",
+        default=str(DEFAULT_METADATA_MODEL_PATH),
+        help="Path to the trained metadata fastText .bin model.",
     )
     parser.add_argument(
         "--topk",
@@ -70,6 +71,22 @@ def parse_args() -> argparse.Namespace:
         help="Optional limit on number of songs loaded from DB for quick experiments.",
     )
     parser.add_argument(
+        "--hybrid-alpha",
+        type=float,
+        default=0.5,
+        help="Metadata weight for hybrid embeddings. Only used when dimensions match.",
+    )
+    parser.add_argument(
+        "--search-alpha",
+        action="store_true",
+        help="Evaluate multiple hybrid alpha values and report the best one.",
+    )
+    parser.add_argument(
+        "--alpha-grid",
+        default=DEFAULT_ALPHA_GRID,
+        help="Comma-separated hybrid alpha values used when --search-alpha is enabled.",
+    )
+    parser.add_argument(
         "--relevance-fields",
         default=DEFAULT_RELEVANCE_FIELDS,
         help="Comma-separated relevance criteria. Allowed values: artist, album, genre.",
@@ -97,6 +114,18 @@ def parse_int_list(raw: str) -> List[int]:
     if not values:
         raise ValueError("No valid integer values found.")
     return sorted(set(values))
+
+
+def parse_float_list(raw: str) -> List[float]:
+    values = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        values.append(float(part))
+    if not values:
+        raise ValueError("No valid float values found.")
+    return values
 
 
 def parse_component_list(raw: str) -> List[str]:
@@ -164,6 +193,22 @@ def build_metadata_text(song: dict) -> str:
     ).strip()
 
 
+def parse_vector(raw_value) -> np.ndarray:
+    if raw_value is None:
+        raise ValueError("Embedding vector is missing.")
+
+    if isinstance(raw_value, bytes):
+        raw_value = raw_value.decode("utf-8")
+
+    data = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+    vector = np.asarray(data, dtype=np.float32)
+    if vector.ndim != 1:
+        raise ValueError(f"Expected 1D vector, got shape={vector.shape}")
+    if not np.all(np.isfinite(vector)):
+        raise ValueError("Embedding vector contains non-finite values.")
+    return vector
+
+
 def l2_normalize(matrix: np.ndarray) -> np.ndarray:
     matrix = np.asarray(matrix, dtype=np.float32)
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
@@ -171,7 +216,7 @@ def l2_normalize(matrix: np.ndarray) -> np.ndarray:
     return matrix / norms
 
 
-def compute_embedding(model: fasttext.FastText._FastText, song: dict) -> np.ndarray:
+def compute_metadata_embedding(model: fasttext.FastText._FastText, song: dict) -> np.ndarray:
     text = build_metadata_text(song)
     words = text.split()
     if not words:
@@ -190,7 +235,8 @@ def fetch_song_rows(limit_songs: int) -> List[dict]:
             a.name AS artist_name,
             COALESCE(s.album_id, 0) AS album_id,
             COALESCE(al.title, '') AS album_title,
-            genre_map.genre_ids
+            genre_map.genre_ids,
+            audio.vector AS audio_vector
         FROM songs s
         JOIN artists a
             ON s.artist_id = a.id
@@ -204,6 +250,8 @@ def fetch_song_rows(limit_songs: int) -> List[dict]:
             GROUP BY sg.song_id
         ) genre_map
             ON genre_map.song_id = s.id
+        JOIN song_embeddings audio
+            ON s.id = audio.song_id AND audio.type = 'audio'
         WHERE s.is_deleted = 0
         ORDER BY s.id
     """
@@ -224,7 +272,7 @@ def fetch_song_rows(limit_songs: int) -> List[dict]:
     return rows
 
 
-def build_dataset(rows: Sequence[dict], model: fasttext.FastText._FastText) -> Dict[str, object]:
+def build_dataset(rows: Sequence[dict], metadata_model: fasttext.FastText._FastText) -> Dict[str, object]:
     song_ids: List[int] = []
     titles: List[str] = []
     artist_ids: List[int] = []
@@ -233,12 +281,14 @@ def build_dataset(rows: Sequence[dict], model: fasttext.FastText._FastText) -> D
     album_titles: List[str] = []
     genre_sets: List[Set[int]] = []
     metadata_vectors: List[np.ndarray] = []
+    audio_vectors: List[np.ndarray] = []
 
     skipped = 0
 
     for row in rows:
         try:
-            vector = compute_embedding(model, row)
+            metadata_vec = compute_metadata_embedding(metadata_model, row)
+            audio_vec = parse_vector(row["audio_vector"])
         except Exception:
             skipped += 1
             continue
@@ -250,12 +300,11 @@ def build_dataset(rows: Sequence[dict], model: fasttext.FastText._FastText) -> D
         album_ids.append(int(row.get("album_id") or 0))
         album_titles.append(row.get("album_title") or "")
         genre_sets.append(set(row.get("genre_ids") or set()))
-        metadata_vectors.append(vector)
+        metadata_vectors.append(metadata_vec)
+        audio_vectors.append(audio_vec)
 
     if not song_ids:
-        raise RuntimeError("No songs could be embedded for evaluation.")
-
-    metadata_matrix = l2_normalize(np.vstack(metadata_vectors))
+        raise RuntimeError("No songs with valid metadata and audio embeddings were loaded.")
 
     return {
         "song_ids": song_ids,
@@ -265,7 +314,8 @@ def build_dataset(rows: Sequence[dict], model: fasttext.FastText._FastText) -> D
         "album_ids": np.asarray(album_ids, dtype=np.int32),
         "album_titles": album_titles,
         "genre_sets": genre_sets,
-        "metadata_matrix": metadata_matrix,
+        "metadata_matrix": l2_normalize(np.vstack(metadata_vectors)),
+        "audio_matrix": l2_normalize(np.vstack(audio_vectors)),
         "skipped": skipped,
     }
 
@@ -346,6 +396,51 @@ def graded_relevance(
     return score
 
 
+def build_query_ground_truth(
+    query_indices: Sequence[int],
+    artist_ids: np.ndarray,
+    album_ids: np.ndarray,
+    genre_sets: Sequence[Set[int]],
+    artist_to_indices: Dict[int, Set[int]],
+    album_to_indices: Dict[int, Set[int]],
+    genre_to_indices: Dict[int, Set[int]],
+    relevance_fields: Sequence[str],
+    relevance_weights: Dict[str, int],
+) -> Dict[int, Dict[str, object]]:
+    truth: Dict[int, Dict[str, object]] = {}
+
+    for query_idx in query_indices:
+        relevant = build_relevant_set(
+            query_idx,
+            artist_ids,
+            album_ids,
+            genre_sets,
+            artist_to_indices,
+            album_to_indices,
+            genre_to_indices,
+            relevance_fields,
+        )
+        grades = {
+            idx: graded_relevance(
+                query_idx,
+                idx,
+                artist_ids,
+                album_ids,
+                genre_sets,
+                relevance_fields,
+                relevance_weights,
+            )
+            for idx in relevant
+        }
+        grades = {idx: grade for idx, grade in grades.items() if grade > 0}
+        truth[query_idx] = {
+            "relevant": set(grades.keys()),
+            "grades": grades,
+        }
+
+    return truth
+
+
 def select_query_indices(
     total_songs: int,
     artist_ids: np.ndarray,
@@ -384,52 +479,6 @@ def select_query_indices(
 
     eligible.sort()
     return eligible
-
-
-def build_query_ground_truth(
-    query_indices: Sequence[int],
-    artist_ids: np.ndarray,
-    album_ids: np.ndarray,
-    genre_sets: Sequence[Set[int]],
-    artist_to_indices: Dict[int, Set[int]],
-    album_to_indices: Dict[int, Set[int]],
-    genre_to_indices: Dict[int, Set[int]],
-    relevance_fields: Sequence[str],
-    relevance_weights: Dict[str, int],
-) -> Dict[int, Dict[str, object]]:
-    truth: Dict[int, Dict[str, object]] = {}
-
-    for query_idx in query_indices:
-        relevant = build_relevant_set(
-            query_idx,
-            artist_ids,
-            album_ids,
-            genre_sets,
-            artist_to_indices,
-            album_to_indices,
-            genre_to_indices,
-            relevance_fields,
-        )
-        grades = {
-            idx: graded_relevance(
-                query_idx,
-                idx,
-                artist_ids,
-                album_ids,
-                genre_sets,
-                relevance_fields,
-                relevance_weights,
-            )
-            for idx in relevant
-        }
-        grades = {idx: grade for idx, grade in grades.items() if grade > 0}
-
-        truth[query_idx] = {
-            "relevant": set(grades.keys()),
-            "grades": grades,
-        }
-
-    return truth
 
 
 def batched_topk(
@@ -524,7 +573,6 @@ def evaluate_model(
             top_items = predictions[:k]
             binary_hits = [1 if idx in relevant else 0 for idx in top_items]
             retrieved_hits = sum(binary_hits)
-
             graded_hits = [grades.get(int(idx), 0) for idx in top_items]
             ideal_topk = ideal_relevances[:k]
 
@@ -573,14 +621,12 @@ def print_model_summary(
     }
     for k_text, metrics in results.items():
         print(
-            (
-                f"K={k_text:>2} | "
-                f"Hit={metrics['hit_rate']:.4f} | "
-                f"Precision={metrics['precision']:.4f} | "
-                f"Recall={metrics['recall']:.4f} | "
-                f"NDCG={metrics['ndcg']:.4f} | "
-                f"MAP={metrics['map']:.4f}"
-            )
+            f"K={k_text:>2} | "
+            f"Hit={metrics['hit_rate']:.4f} | "
+            f"Precision={metrics['precision']:.4f} | "
+            f"Recall={metrics['recall']:.4f} | "
+            f"NDCG={metrics['ndcg']:.4f} | "
+            f"MAP={metrics['map']:.4f}"
         )
         proxy_parts = [
             f"{label}={metrics[key]:.4f}"
@@ -589,6 +635,13 @@ def print_model_summary(
         ]
         if proxy_parts:
             print(f"      {' | '.join(proxy_parts)}")
+
+
+def build_hybrid_matrix(metadata_matrix: np.ndarray, audio_matrix: np.ndarray, alpha: float) -> np.ndarray:
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError(f"Hybrid alpha must be in [0, 1], got {alpha}")
+    hybrid = alpha * metadata_matrix + (1.0 - alpha) * audio_matrix
+    return l2_normalize(hybrid)
 
 
 def build_relevance_description(
@@ -601,9 +654,7 @@ def build_relevance_description(
         "genre": "shared genre",
     }
     graded_parts = [f"{field}={relevance_weights[field]}" for field in relevance_fields]
-    binary_desc = " OR ".join(binary_parts[field] for field in relevance_fields)
-    graded_desc = ", ".join(graded_parts)
-    return binary_desc, graded_desc
+    return " OR ".join(binary_parts[field] for field in relevance_fields), ", ".join(graded_parts)
 
 
 def ensure_parent_dir(path: str) -> None:
@@ -624,30 +675,32 @@ def format_size(num_bytes: int) -> str:
 
 def main() -> None:
     args = parse_args()
-    model_path = Path(args.model_path).resolve()
-    if not model_path.exists():
-        raise FileNotFoundError(f"Model file not found: {model_path}")
+    metadata_model_path = Path(args.metadata_model_path).resolve()
+    if not metadata_model_path.exists():
+        raise FileNotFoundError(f"Metadata model file not found: {metadata_model_path}")
 
     topk_values = parse_int_list(args.topk)
+    alpha_grid = parse_float_list(args.alpha_grid)
     relevance_fields = parse_component_list(args.relevance_fields)
     relevance_weights = parse_weight_map(args.relevance_weights, relevance_fields)
 
-    print(f"Loading model: {model_path}")
-    print(f"Model size: {format_size(model_path.stat().st_size)}")
-    model = fasttext.load_model(str(model_path))
-    print(f"Model dimension: {model.get_dimension()}")
+    print(f"Loading metadata model: {metadata_model_path}")
+    print(f"Metadata model size: {format_size(metadata_model_path.stat().st_size)}")
+    metadata_model = fasttext.load_model(str(metadata_model_path))
+    print(f"Metadata dimension: {metadata_model.get_dimension()}")
 
-    print("Fetching songs from DB...")
+    print("Fetching songs and audio embeddings from DB...")
     rows = fetch_song_rows(args.limit_songs)
-    print(f"Loaded {len(rows)} songs from DB.")
+    print(f"Loaded {len(rows)} rows from DB.")
 
-    print("Computing metadata embeddings...")
-    dataset = build_dataset(rows, model)
+    print("Building dataset...")
+    dataset = build_dataset(rows, metadata_model)
     song_count = len(dataset["song_ids"])
     print(
-        f"Prepared {song_count} songs with metadata embeddings "
-        f"(skipped {dataset['skipped']} rows)."
+        f"Prepared {song_count} songs with metadata and audio vectors "
+        f"(skipped {dataset['skipped']} invalid rows)."
     )
+    print(f"Audio dimension: {dataset['audio_matrix'].shape[1]}")
 
     artist_to_indices, album_to_indices, genre_to_indices = build_inverted_indices(
         dataset["artist_ids"],
@@ -681,22 +734,40 @@ def main() -> None:
         relevance_weights,
     )
 
-    binary_desc, graded_desc = build_relevance_description(
-        relevance_fields,
-        relevance_weights,
-    )
+    binary_desc, graded_desc = build_relevance_description(relevance_fields, relevance_weights)
+    print(f"Evaluating {len(query_indices)} query songs with Top-K={','.join(str(k) for k in topk_values)}.")
+    print(f"Binary relevance: {binary_desc}. Graded relevance: {graded_desc}.")
 
-    print(
-        f"Evaluating {len(query_indices)} query songs "
-        f"with Top-K={','.join(str(k) for k in topk_values)}."
-    )
-    print(
-        f"Binary relevance: {binary_desc}. "
-        f"Graded relevance: {graded_desc}."
-    )
+    results = {
+        "config": {
+            "metadata_model_path": str(metadata_model_path),
+            "metadata_model_size_bytes": metadata_model_path.stat().st_size,
+            "metadata_dimension": metadata_model.get_dimension(),
+            "audio_dimension": int(dataset["audio_matrix"].shape[1]),
+            "topk": topk_values,
+            "max_queries": args.max_queries,
+            "evaluated_queries": len(query_indices),
+            "seed": args.seed,
+            "batch_size": args.batch_size,
+            "min_relevant": args.min_relevant,
+            "limit_songs": args.limit_songs,
+            "hybrid_alpha": args.hybrid_alpha,
+            "search_alpha": args.search_alpha,
+            "alpha_grid": alpha_grid,
+            "relevance_fields": relevance_fields,
+            "relevance_weights": relevance_weights,
+        },
+        "dataset": {
+            "songs_loaded": len(rows),
+            "songs_used": song_count,
+            "invalid_rows_skipped": int(dataset["skipped"]),
+            "query_count": len(query_indices),
+        },
+        "models": {},
+    }
 
-    metrics = evaluate_model(
-        model_name=model_path.name,
+    results["models"]["metadata"] = evaluate_model(
+        model_name=f"Metadata ({metadata_model_path.name})",
         embeddings=dataset["metadata_matrix"],
         query_indices=query_indices,
         ground_truth=query_ground_truth,
@@ -708,29 +779,77 @@ def main() -> None:
         batch_size=args.batch_size,
     )
 
-    results = {
-        "config": {
-            "model_path": str(model_path),
-            "model_size_bytes": model_path.stat().st_size,
-            "model_dimension": model.get_dimension(),
-            "topk": topk_values,
-            "max_queries": args.max_queries,
-            "evaluated_queries": len(query_indices),
-            "seed": args.seed,
-            "batch_size": args.batch_size,
-            "min_relevant": args.min_relevant,
-            "limit_songs": args.limit_songs,
-            "relevance_fields": relevance_fields,
-            "relevance_weights": relevance_weights,
-        },
-        "dataset": {
-            "songs_loaded": len(rows),
-            "songs_embedded": song_count,
-            "invalid_rows_skipped": int(dataset["skipped"]),
-            "query_count": len(query_indices),
-        },
-        "metrics": metrics,
-    }
+    results["models"]["audio"] = evaluate_model(
+        model_name="Audio (from DB)",
+        embeddings=dataset["audio_matrix"],
+        query_indices=query_indices,
+        ground_truth=query_ground_truth,
+        artist_ids=dataset["artist_ids"],
+        album_ids=dataset["album_ids"],
+        genre_sets=dataset["genre_sets"],
+        relevance_fields=relevance_fields,
+        topk_values=topk_values,
+        batch_size=args.batch_size,
+    )
+
+    metadata_dim = int(dataset["metadata_matrix"].shape[1])
+    audio_dim = int(dataset["audio_matrix"].shape[1])
+    if metadata_dim != audio_dim:
+        message = (
+            f"Skipping hybrid evaluation because metadata_dim={metadata_dim} "
+            f"and audio_dim={audio_dim} do not match."
+        )
+        print(f"\n{message}")
+        results["models"]["hybrid_skipped"] = {
+            "reason": message,
+        }
+    elif args.search_alpha:
+        hybrid_runs = []
+        for alpha in alpha_grid:
+            hybrid_matrix = build_hybrid_matrix(dataset["metadata_matrix"], dataset["audio_matrix"], alpha)
+            hybrid_metrics = evaluate_model(
+                model_name=f"Hybrid(alpha={alpha:.2f})",
+                embeddings=hybrid_matrix,
+                query_indices=query_indices,
+                ground_truth=query_ground_truth,
+                artist_ids=dataset["artist_ids"],
+                album_ids=dataset["album_ids"],
+                genre_sets=dataset["genre_sets"],
+                relevance_fields=relevance_fields,
+                topk_values=topk_values,
+                batch_size=args.batch_size,
+            )
+            hybrid_runs.append({"alpha": alpha, "metrics": hybrid_metrics})
+
+        primary_k = str(max(topk_values))
+        best_run = max(
+            hybrid_runs,
+            key=lambda run: (run["metrics"][primary_k]["ndcg"], run["metrics"][primary_k]["hit_rate"]),
+        )
+        print(
+            f"\nBest hybrid by NDCG@{primary_k}: alpha={best_run['alpha']:.2f} "
+            f"(NDCG={best_run['metrics'][primary_k]['ndcg']:.4f})"
+        )
+        results["models"]["hybrid_search"] = hybrid_runs
+        results["models"]["hybrid_best"] = best_run
+    else:
+        hybrid_matrix = build_hybrid_matrix(
+            dataset["metadata_matrix"],
+            dataset["audio_matrix"],
+            args.hybrid_alpha,
+        )
+        results["models"]["hybrid"] = evaluate_model(
+            model_name=f"Hybrid(alpha={args.hybrid_alpha:.2f})",
+            embeddings=hybrid_matrix,
+            query_indices=query_indices,
+            ground_truth=query_ground_truth,
+            artist_ids=dataset["artist_ids"],
+            album_ids=dataset["album_ids"],
+            genre_sets=dataset["genre_sets"],
+            relevance_fields=relevance_fields,
+            topk_values=topk_values,
+            batch_size=args.batch_size,
+        )
 
     if args.output:
         ensure_parent_dir(args.output)

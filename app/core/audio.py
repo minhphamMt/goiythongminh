@@ -163,7 +163,10 @@ class AudioEmbeddingService:
         os.close(fd)
         try:
             blob = get_bucket().blob(blob_path)
-            blob.download_to_filename(temp_path)
+            blob.download_to_filename(
+                temp_path,
+                timeout=settings.audio_download_timeout_seconds,
+            )
             return temp_path
         except Exception:
             try:
@@ -233,11 +236,18 @@ class AudioEmbeddingService:
             raise MissingAudioPathError(f"Song {song_id} does not have a valid audio_path.")
 
         if raw_audio_path != blob_path:
+            print(f"[audio] normalize song_id={song_id} audio_path -> {blob_path}")
             update_song_audio_path(song_id, blob_path)
 
+        print(f"[audio] downloading song_id={song_id} blob_path={blob_path}")
         temp_path = self.download_with_retry(blob_path)
         try:
+            temp_size_mb = os.path.getsize(temp_path) / (1024 * 1024)
+            print(f"[audio] downloaded song_id={song_id} temp_path={temp_path} size_mb={temp_size_mb:.2f}")
+
+            print(f"[audio] embedding song_id={song_id}")
             vector = self.embed_audio_file(temp_path)
+            print(f"[audio] saving embedding song_id={song_id} dim={int(vector.shape[0])}")
             save_song_embedding(song_id, "audio", vector.tolist())
         finally:
             try:

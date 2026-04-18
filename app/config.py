@@ -59,10 +59,12 @@ class Settings:
     audio_prefetch: int
     audio_segment_batch: int
     audio_download_retries: int
+    audio_download_timeout_seconds: int
     audio_min_analysis_sec: float
     worker_idle_sleep_seconds: float
     worker_retry_delay_seconds: int
     worker_max_attempts: int
+    worker_running_timeout_seconds: int
     run_metadata_worker: bool
     run_audio_worker: bool
     supervisor_poll_seconds: float
@@ -108,10 +110,12 @@ settings = Settings(
     audio_prefetch=int(_get_env("AUDIO_PREFETCH", "40")),
     audio_segment_batch=int(_get_env("AUDIO_SEGMENT_BATCH", "32")),
     audio_download_retries=int(_get_env("AUDIO_DOWNLOAD_RETRIES", "2")),
+    audio_download_timeout_seconds=int(_get_env("AUDIO_DOWNLOAD_TIMEOUT_SECONDS", "120")),
     audio_min_analysis_sec=float(_get_env("AUDIO_MIN_ANALYSIS_SEC", "5")),
     worker_idle_sleep_seconds=float(_get_env("WORKER_IDLE_SLEEP_SECONDS", "3")),
     worker_retry_delay_seconds=int(_get_env("WORKER_RETRY_DELAY_SECONDS", "30")),
     worker_max_attempts=int(_get_env("WORKER_MAX_ATTEMPTS", "3")),
+    worker_running_timeout_seconds=int(_get_env("WORKER_RUNNING_TIMEOUT_SECONDS", "1800")),
     run_metadata_worker=_get_bool_env("EMBEDDING_RUN_METADATA_WORKER", True),
     run_audio_worker=_get_bool_env("EMBEDDING_RUN_AUDIO_WORKER", True),
     supervisor_poll_seconds=float(_get_env("SUPERVISOR_POLL_SECONDS", "5")),

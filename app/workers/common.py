@@ -12,6 +12,7 @@ from app.repository import (
     ensure_schema,
     mark_job_completed,
     mark_job_failed,
+    requeue_stale_running_jobs,
     reschedule_job,
 )
 
@@ -33,6 +34,16 @@ def run_worker_loop(
     print(f"Starting {worker_name}")
 
     while True:
+        recovered = requeue_stale_running_jobs(
+            job_type,
+            settings.worker_running_timeout_seconds,
+        )
+        if recovered:
+            print(
+                f"[{worker_name}] recovered {recovered} stale {job_type} job(s) "
+                f"older than {settings.worker_running_timeout_seconds} seconds"
+            )
+
         job = claim_next_job(job_type, worker_name)
         if not job:
             time.sleep(sleep_seconds)
@@ -80,6 +91,16 @@ def drain_jobs_once(
     while True:
         if max_jobs is not None and processed >= max_jobs:
             break
+
+        recovered = requeue_stale_running_jobs(
+            job_type,
+            settings.worker_running_timeout_seconds,
+        )
+        if recovered:
+            print(
+                f"[{worker_name}] recovered {recovered} stale {job_type} job(s) "
+                f"older than {settings.worker_running_timeout_seconds} seconds"
+            )
 
         job = claim_next_job(job_type, worker_name)
         if not job:

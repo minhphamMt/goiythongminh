@@ -406,6 +406,43 @@ def claim_next_job(job_type: str, worker_name: str) -> dict[str, Any] | None:
                 return row
 
 
+def requeue_stale_running_jobs(job_type: str, stale_after_seconds: int) -> int:
+    _validate_job_type(job_type)
+    ensure_schema()
+
+    if stale_after_seconds <= 0:
+        return 0
+
+    cutoff = datetime.utcnow() - timedelta(seconds=stale_after_seconds)
+    message = (
+        f"Recovered stale running job after exceeding "
+        f"{stale_after_seconds} seconds without completion."
+    )
+
+    with connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE embedding_jobs
+                SET
+                    status = 'pending',
+                    worker_name = NULL,
+                    claim_token = NULL,
+                    last_error = %s,
+                    available_at = CURRENT_TIMESTAMP,
+                    started_at = NULL,
+                    finished_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE job_type = %s
+                  AND status = 'running'
+                  AND started_at IS NOT NULL
+                  AND started_at < %s
+                """,
+                (message, job_type, cutoff),
+            )
+            return int(cursor.rowcount)
+
+
 def mark_job_completed(job_id: int) -> None:
     with connection() as conn:
         with conn.cursor() as cursor:
